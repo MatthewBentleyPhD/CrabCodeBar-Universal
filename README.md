@@ -16,7 +16,23 @@ CrabCodeBar watches your Claude Code sessions via hooks and shows what's happeni
 | **Waiting** | Session idle (recent) | Pacing side to side |
 | **Asleep** | No activity for 5 min (configurable) | Curled up with rising Z's |
 
-![Crab animation states](docs/crab-states.png)
+### Animation previews
+
+**Working** — claws tapping away while Claude runs tools
+
+![Working animation](resources/CrabCodeBar-working.gif)
+
+**Jumping** — bouncing to get your attention (approval needed or task finished)
+
+![Jumping animation](resources/CrabCodeBar-Jumping.gif)
+
+**Waiting** — pacing back and forth during idle sessions
+
+![Waiting animation](resources/CrabCodeBar-Walking.gif)
+
+**Asleep** — curled up with Z's after the idle timeout
+
+![Sleeping animation](resources/CrabCodeBar-sleeping.gif)
 
 **Audio notifications:** CrabCodeBar can play a sound when Claude needs your input (approval requests) and when a task finishes, so you don't have to watch the screen. Enable or change sounds from the right-click menu. On macOS, choose from 15 system sounds (Basso, Blow, Bottle, Frog, Funk, Glass, Hero, Morse, Ping, Pop, Purr, Sosumi, Submarine, Tink) or None. On Windows, sounds map to system alert types. On Linux, sounds play via freedesktop audio files using paplay, aplay, or ogg123.
 
@@ -161,6 +177,7 @@ CrabCodeBar-Universal/
   generate_sprites.py    # programmatic pixel art generator
   generate_docs_image.py # documentation image generator
   sprites/               # generated 45x39 PNG sprite frames
+  resources/             # animated GIF previews of each state
   docs/                  # documentation images and demo GIF
   requirements.txt       # pip dependency versions
   LICENSE                # MIT license
