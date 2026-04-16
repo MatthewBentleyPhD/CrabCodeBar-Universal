@@ -1,6 +1,6 @@
 # CrabCodeBar Universal
 
-A cross-platform animated pixel crab that lives in your system tray and reacts to [Claude Code](https://claude.com/claude-code) session activity in real time. Works on macOS, Windows, and Linux.
+A cross-platform animated pixel crab that lives in your system tray and reacts to [Claude Code](https://claude.com/claude-code) session activity in real time. Optional sound alerts tell you when Claude needs input or finishes a task. Works on macOS, Windows, and Linux.
 
 ![CrabCodeBar demo](docs/crabcodebar.gif)
 
@@ -18,7 +18,9 @@ CrabCodeBar watches your Claude Code sessions via hooks and shows what's happeni
 
 ![Crab animation states](docs/crab-states.png)
 
-Right-click the tray icon for options: body color, notification sounds, sleep timer, and quit.
+**Audio notifications:** CrabCodeBar can play a sound when Claude needs your input (approval requests) and when a task finishes, so you don't have to watch the screen. Enable sounds from the right-click menu. Uses native system sounds on each platform.
+
+Right-click the tray icon for more options: body color, sleep timer, and quit.
 
 ![Available color options](docs/crab-colors.png)
 
