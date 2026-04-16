@@ -25,8 +25,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import (  # noqa: E402
     ALLOWED_SOUNDS, APPROVAL_TOOLS, CONFIG_PATH, DEFAULT_SOUND,
-    SOUND_EVENT_KEY, STATE_PATH, atomic_write_json, play_sound, read_json,
+    HOOK_EVENTS, SOUND_EVENT_KEY, STATE_PATH, atomic_write_json,
+    play_sound, read_json,
 )
+
+VALID_EVENTS = set(HOOK_EVENTS)
+MAX_FIELD_LEN = 256
 
 APPROVAL_SOUND_LOCK = STATE_PATH.parent / "crab-approval-sound.lock"
 
@@ -75,16 +79,23 @@ def play_sound_for_event(event, tool_name=None):
         mark_approval_sound_played()
 
 
+def _safe_str(val):
+    """Return val if it's a short string, else None."""
+    if isinstance(val, str) and len(val) <= MAX_FIELD_LEN:
+        return val
+    return None
+
+
 def read_payload():
     """Best-effort read of Claude Code hook JSON payload from stdin."""
     if sys.stdin.isatty():
         return {}
     try:
-        data = sys.stdin.read()
+        data = sys.stdin.read(65536)  # 64 KB hard cap
         if not data.strip():
             return {}
         return json.loads(data)
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, OSError):
         return {}
 
 
@@ -97,10 +108,14 @@ def main():
         print("Usage: hook.py --event <EventName>", file=sys.stderr)
         sys.exit(1)
 
+    if event not in VALID_EVENTS:
+        print(f"crab-buddy hook: unknown event '{event}'", file=sys.stderr)
+        sys.exit(0)  # exit 0 so Claude Code is not blocked
+
     payload = read_payload()
-    session_id = payload.get("session_id")
-    tool_name = payload.get("tool_name")
-    stop_reason = payload.get("stop_reason")
+    session_id = _safe_str(payload.get("session_id"))
+    tool_name = _safe_str(payload.get("tool_name"))
+    stop_reason = _safe_str(payload.get("stop_reason"))
 
     state = {
         "last_event": event,

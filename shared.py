@@ -9,8 +9,10 @@ Cross-platform: works on macOS, Windows, and Linux.
 import json
 import os
 import platform
+import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 PLATFORM = platform.system()  # "Darwin", "Windows", "Linux"
@@ -20,7 +22,7 @@ STATE_DIR = Path.home() / ".claude" / "state"
 STATE_PATH = STATE_DIR / "crab.json"
 CONFIG_PATH = STATE_DIR / "crab-config.json"
 PID_PATH = STATE_DIR / "crab.pid"
-UPDATE_CHECK_PATH = STATE_DIR / "crab-update-check.json"
+SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 # ---- Auto-start paths (platform-dependent) ----
 APP_NAME = "CrabCodeBar"
@@ -40,7 +42,6 @@ RUNTIME_FILES = [
     STATE_PATH,
     CONFIG_PATH,
     PID_PATH,
-    UPDATE_CHECK_PATH,
     STATE_DIR / "crab-approval-sound.lock",
 ]
 RUNTIME_DIRS = [
@@ -102,14 +103,24 @@ def read_json(path, default=None):
         return default
 
 
-def atomic_write_json(path, data):
-    """Atomic JSON write via temp file + rename on the same filesystem."""
+def atomic_write_json(path, data, indent=None):
+    """Atomic JSON write via temp file + rename on the same filesystem.
+
+    Sets file permissions to 0o600 (owner-only) on POSIX systems.
+    Refuses to write through symlinks at the target path.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Refuse to follow symlinks at the target path
+    if path.is_symlink():
+        path.unlink()
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".crab.", suffix=".tmp")
     try:
+        os.chmod(fd, 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump(data, f)
+            json.dump(data, f, indent=indent)
+            if indent:
+                f.write("\n")
         os.replace(tmp, path)
     except Exception:
         try:
@@ -117,6 +128,40 @@ def atomic_write_json(path, data):
         except OSError:
             pass
         raise
+
+
+def kill_pid_file(pid_path=None, wait_iters=10, verbose=False):
+    """Kill a process identified by a PID file. Used by both the tray app
+    (kill-and-replace on startup) and the installer (stop running instance).
+
+    Returns True if a process was killed, False otherwise.
+    """
+    if pid_path is None:
+        pid_path = PID_PATH
+    try:
+        pid = int(Path(pid_path).read_text().strip())
+    except (FileNotFoundError, ValueError, OSError):
+        return False
+    if pid == os.getpid():
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(wait_iters):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.1)
+        if verbose:
+            print(f"  Stopped running instance (PID {pid})")
+        return True
+    except PermissionError:
+        import sys
+        print(f"CrabCodeBar: SIGTERM refused for PID {pid}; "
+              "PID file may be stale", file=sys.stderr)
+        return False
+    except OSError:
+        return False
 
 
 def play_sound(name):

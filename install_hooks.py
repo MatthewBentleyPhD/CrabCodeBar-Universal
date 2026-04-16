@@ -17,14 +17,16 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import HOOK_EVENTS, HOOK_MARKER  # noqa: E402
+from shared import (  # noqa: E402
+    HOOK_EVENTS, HOOK_MARKER, SETTINGS_PATH, atomic_write_json,
+)
 
-SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 HOOK_SCRIPT = Path(__file__).resolve().parent / "hook.py"
+MAX_BACKUPS = 3
 
 
 def crab_hook_entry(event):
-    cmd = f"python3 {HOOK_SCRIPT} --event {event}"
+    cmd = f'python3 "{HOOK_SCRIPT}" --event {event}'
     return {
         "matcher": "*",
         "hooks": [{"type": "command", "command": cmd}],
@@ -50,8 +52,13 @@ def is_crab_entry(entry):
 def load_settings():
     if not SETTINGS_PATH.exists():
         return {}
-    with open(SETTINGS_PATH) as f:
-        return json.load(f)
+    try:
+        with open(SETTINGS_PATH) as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"\nError: {SETTINGS_PATH} is not valid JSON: {e}", file=sys.stderr)
+        print("Fix or delete it before running install_hooks.py.", file=sys.stderr)
+        sys.exit(1)
 
 
 def backup_settings():
@@ -60,6 +67,13 @@ def backup_settings():
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = SETTINGS_PATH.with_suffix(f".json.backup-{ts}")
     shutil.copy2(SETTINGS_PATH, backup)
+    # Prune: keep only the most recent backups
+    backups = sorted(SETTINGS_PATH.parent.glob("settings.json.backup-*"))
+    for old in backups[:-MAX_BACKUPS]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
     return backup
 
 
@@ -73,12 +87,12 @@ def install():
         cleaned.append(crab_hook_entry(event))
         settings["hooks"][event] = cleaned
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(SETTINGS_PATH, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
+    atomic_write_json(SETTINGS_PATH, settings, indent=2)
 
 
 def uninstall():
+    if not SETTINGS_PATH.exists():
+        return
     settings = load_settings()
     hooks = settings.get("hooks", {})
     for event in HOOK_EVENTS:
@@ -90,9 +104,7 @@ def uninstall():
             hooks.pop(event, None)
     if not hooks:
         settings.pop("hooks", None)
-    with open(SETTINGS_PATH, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
+    atomic_write_json(SETTINGS_PATH, settings, indent=2)
 
 
 def main():

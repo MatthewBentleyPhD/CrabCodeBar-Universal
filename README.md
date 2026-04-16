@@ -111,10 +111,14 @@ The installer will check for these and prompt you if they're missing.
 CrabCodeBar uses [Claude Code hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) to track session activity:
 
 1. **Hooks** fire on Claude Code lifecycle events (session start/end, tool use, prompts, notifications, task completion)
-2. **hook.py** receives each event and writes the current state to `~/.claude/state/crab.json`
-3. **crabcodebar.py** reads that file once per second and updates the tray icon animation
+2. **hook.py** receives each event, validates it against the known event list, and writes the current state to `~/.claude/state/crab.json`
+3. **crabcodebar.py** polls that file using mtime-based change detection and updates the tray icon animation only when frames change
 
 Only one instance runs at a time (kill-and-replace via PID file). Launching a second instance cleanly replaces the first.
+
+The animation loop adapts its polling rate: 1 second during active states, 5 seconds while asleep. Sprite frames are cached in memory after first load, so steady-state CPU usage is near zero.
+
+If Claude Code crashes without firing SessionEnd, a 30-minute safety cap prevents the crab from being stuck in "working" indefinitely (even with the idle timeout set to "Never").
 
 ## File layout
 
@@ -127,6 +131,7 @@ CrabCodeBar-Universal/
   install_hooks.py     # hook registration in ~/.claude/settings.json
   generate_sprites.py  # programmatic pixel art generator
   sprites/             # generated PNG sprite frames
+  requirements.txt     # pinned dependency versions
 ```
 
 ## Customization
@@ -134,6 +139,13 @@ CrabCodeBar-Universal/
 **Custom sprites:** Replace the PNGs in `sprites/` with your own 45x39 pixel art. Use body color `(217, 119, 87)` and dark body color `(168, 83, 59)` so the runtime color tinting works. Keep the same filenames (`working_0.png`, `asleep_0.png`, etc.).
 
 **Custom colors:** Add entries to `COLOR_PALETTES` in `crabcodebar.py`. Each entry is `(primary_rgb, dark_rgb)` or `None` for "use sprites as-is."
+
+## Known limitations
+
+- **macOS icon sizing:** Uses a direct NSImage bypass to work around pystray's 22x22 squash. This accesses a pystray private API (`_status_item`) and may break if pystray's internals change. The app falls back to pystray's default behavior if the bypass fails.
+- **Windows SIGTERM:** On Windows, `os.kill` with SIGTERM performs a hard kill (TerminateProcess). The old instance's cleanup handler does not run, but the new instance overwrites the PID file on startup.
+- **Multi-session:** If multiple Claude Code sessions run in parallel, the state file uses last-write-wins. The crab reflects whichever session fired the most recent hook.
+- **GNOME/Wayland:** On GNOME 40+ without the AppIndicator shell extension, pystray's Xorg fallback may not display the tray icon. Install `gnome-shell-extension-appindicator` for best results.
 
 ## Credits
 
