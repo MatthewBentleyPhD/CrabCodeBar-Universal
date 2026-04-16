@@ -109,7 +109,7 @@ def main():
         sys.exit(1)
 
     if event not in VALID_EVENTS:
-        print(f"crab-buddy hook: unknown event '{event}'", file=sys.stderr)
+        print(f"CrabCodeBar hook: unknown event '{event}'", file=sys.stderr)
         sys.exit(0)  # exit 0 so Claude Code is not blocked
 
     payload = read_payload()
@@ -131,7 +131,7 @@ def main():
         atomic_write_json(STATE_PATH, state)
     except Exception as e:
         # Never fail loudly -- don't block Claude Code if disk is full etc.
-        print(f"crab-buddy hook: {e}", file=sys.stderr)
+        print(f"CrabCodeBar hook: {e}", file=sys.stderr)
         sys.exit(0)
 
     # Play sound after state is recorded. Failures here are swallowed too.
