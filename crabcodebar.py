@@ -482,6 +482,16 @@ def main():
         print("Run: python3 generate_sprites.py")
         sys.exit(1)
 
+    # Hide Python from the Dock on macOS (run as background-only app)
+    if IS_MACOS:
+        try:
+            from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+            NSApplication.sharedApplication().setActivationPolicy_(
+                NSApplicationActivationPolicyAccessory
+            )
+        except Exception:
+            pass
+
     kill_pid_file()
     _write_pid()
     atexit.register(_remove_pid)
