@@ -21,8 +21,10 @@ import os
 import platform
 import signal
 import sys
+import tempfile
 import time
 import threading
+import traceback
 import webbrowser
 from pathlib import Path
 
@@ -35,35 +37,24 @@ _APP_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_APP_DIR))
 from shared import (  # noqa: E402
     APPROVAL_TOOLS, BODY, BODY_DARK, CONFIG_PATH, DEFAULT_SOUND,
-    PID_PATH, SOUND_NAMES, STATE_PATH, atomic_write_json, read_json,
+    PID_PATH, SOUND_NAMES, STATE_PATH, atomic_write_json, kill_pid_file,
+    read_json,
 )
-
-
-# ---- Single-instance (kill-and-replace) ----
-def _kill_existing():
-    """If another CrabCodeBar process is running, kill it before starting."""
-    try:
-        pid = int(PID_PATH.read_text().strip())
-    except (FileNotFoundError, ValueError, OSError):
-        return
-    if pid == os.getpid():
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-        # Brief wait for clean shutdown
-        for _ in range(10):
-            try:
-                os.kill(pid, 0)  # probe, no signal sent
-            except OSError:
-                break
-            time.sleep(0.1)
-    except OSError:
-        pass  # process already gone
 
 
 def _write_pid():
     PID_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PID_PATH.write_text(str(os.getpid()))
+    fd, tmp = tempfile.mkstemp(dir=PID_PATH.parent, prefix=".crab-pid.", suffix=".tmp")
+    try:
+        os.chmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(str(os.getpid()))
+        os.replace(tmp, PID_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _remove_pid():
@@ -109,6 +100,10 @@ STATE_FRAMES = {
 IDLE_TIMEOUT_DEFAULT = 300
 STOP_CHEER_SEC = 20
 FINISHED_CHEER_SEC = 4
+# Safety cap: if no new event arrives for this long and idle_timeout is
+# disabled ("Never"), fall back to asleep. Prevents the crab from being
+# stuck in "working" forever after a Claude Code crash that skips SessionEnd.
+MAX_WORKING_SEC = 1800  # 30 minutes
 
 IDLE_TIMEOUT_OPTIONS = {
     "30 sec":  30,
@@ -158,8 +153,17 @@ CROP_TOP = 6     # pixels from top edge  (~15% of 39)
 CROP_BOTTOM = 6  # pixels from bottom edge
 
 
+# In-memory cache for decoded+cropped PIL images. Keyed on (color, frame_name).
+# Total size: ~12 entries x ~7 KB pixel data = ~84 KB. Negligible.
+_frame_cache: dict = {}
+
+
 def load_frame(color, frame_name):
     """Return a PIL Image for the given color and frame name, cropped for tray."""
+    cache_key = (color, frame_name)
+    if cache_key in _frame_cache:
+        return _frame_cache[cache_key]
+
     tint = COLOR_PALETTES.get(color)
     if tint is None:
         img = Image.open(SPRITE_DIR / f"{frame_name}.png").convert("RGBA")
@@ -178,7 +182,19 @@ def load_frame(color, frame_name):
             except OSError:
                 img = Image.open(src_path).convert("RGBA")
     w, h = img.size
-    return img.crop((0, CROP_TOP, w, h - CROP_BOTTOM))
+    img = img.crop((0, CROP_TOP, w, h - CROP_BOTTOM))
+    _frame_cache[cache_key] = img
+    return img
+
+
+def invalidate_frame_cache(color=None):
+    """Clear cached frames. Called when color changes."""
+    if color is None:
+        _frame_cache.clear()
+    else:
+        keys_to_remove = [k for k in _frame_cache if k[0] == color]
+        for k in keys_to_remove:
+            del _frame_cache[k]
 
 
 # ---- State derivation ----
@@ -197,7 +213,12 @@ def derive_state(data, idle_timeout=IDLE_TIMEOUT_DEFAULT):
 
     if last_event == "SessionEnd":
         return "asleep", last_event, elapsed
+    # idle_timeout=0 means "Never" (falsy, skips this check).
+    # idle_timeout=None would also skip; use 0 as the "Never" sentinel.
     if idle_timeout and elapsed > idle_timeout:
+        return "asleep", last_event, elapsed
+    # Safety cap: prevent stuck "working" after a crash that skips SessionEnd
+    if elapsed > MAX_WORKING_SEC:
         return "asleep", last_event, elapsed
     if last_event == "Notification":
         return "jumping-approval", last_event, elapsed
@@ -218,8 +239,16 @@ def derive_state(data, idle_timeout=IDLE_TIMEOUT_DEFAULT):
 class CrabTray:
     def __init__(self):
         self.cfg = self._read_config()
+        self._cfg_lock = threading.Lock()
         self.icon = None
         self._running = True
+        # Mtime-based guard: skip json.load if state file unchanged
+        self._last_state_mtime = 0.0
+        self._last_state_data = {}
+        # Frame dedup: skip _set_icon if the frame hasn't changed
+        self._last_frame_key = ("", "")
+        # Rate-limited error logging
+        self._last_error_time = 0.0
 
     def _read_config(self):
         defaults = {
@@ -228,7 +257,11 @@ class CrabTray:
             "sound_finished": DEFAULT_SOUND,
             "idle_timeout": IDLE_TIMEOUT_DEFAULT,
         }
-        return {**defaults, **read_json(CONFIG_PATH)}
+        cfg = {**defaults, **read_json(CONFIG_PATH)}
+        # Validate idle_timeout type (defense against hand-edited config)
+        if not isinstance(cfg.get("idle_timeout"), (int, float)):
+            cfg["idle_timeout"] = IDLE_TIMEOUT_DEFAULT
+        return cfg
 
     def _save_config(self):
         atomic_write_json(CONFIG_PATH, self.cfg)
@@ -236,21 +269,25 @@ class CrabTray:
     # ---- Menu action factories ----
     def _make_set_color(self, color):
         def callback(icon, item):
-            self.cfg["color"] = color
-            self._save_config()
+            with self._cfg_lock:
+                self.cfg["color"] = color
+                self._save_config()
             build_sprite_cache(color)
+            invalidate_frame_cache()
         return callback
 
     def _make_set_sound(self, key, name):
         def callback(icon, item):
-            self.cfg[key] = name
-            self._save_config()
+            with self._cfg_lock:
+                self.cfg[key] = name
+                self._save_config()
         return callback
 
     def _make_set_timeout(self, secs):
         def callback(icon, item):
-            self.cfg["idle_timeout"] = secs
-            self._save_config()
+            with self._cfg_lock:
+                self.cfg["idle_timeout"] = secs
+                self._save_config()
         return callback
 
     @staticmethod
@@ -305,7 +342,7 @@ class CrabTray:
             pystray.MenuItem("Finished Sound", pystray.Menu(*finished_items)),
             pystray.MenuItem("Sleep After", pystray.Menu(*timeout_items)),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Buy me a coffee", self._open_coffee),
+            pystray.MenuItem("☕ Buy me a coffee", self._open_coffee),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self._quit),
         )
@@ -358,26 +395,51 @@ class CrabTray:
                 pass
         self.icon.icon = pil_img
 
+    # ---- State file polling with mtime guard ----
+    def _poll_state(self):
+        """Read state file only if it has changed since last poll."""
+        try:
+            mtime = STATE_PATH.stat().st_mtime
+            if mtime == self._last_state_mtime:
+                return self._last_state_data
+            self._last_state_mtime = mtime
+            self._last_state_data = read_json(STATE_PATH)
+        except OSError:
+            pass
+        return self._last_state_data
+
     # ---- Animation loop (runs in background thread) ----
+    _ERROR_LOG_INTERVAL = 60  # log errors at most once per minute
+
     def _update_loop(self):
         while self._running:
+            sleep_interval = 1.0
             try:
-                data = read_json(STATE_PATH)
-                idle_timeout = self.cfg.get("idle_timeout", IDLE_TIMEOUT_DEFAULT)
+                data = self._poll_state()
+                with self._cfg_lock:
+                    idle_timeout = self.cfg.get("idle_timeout", IDLE_TIMEOUT_DEFAULT)
+                    color = self.cfg.get("color", "orange")
+                if color not in COLOR_PALETTES:
+                    color = "orange"
+
                 state, last_event, elapsed = derive_state(data, idle_timeout)
 
                 frames = STATE_FRAMES[state]
                 frame_idx = int(time.time()) % len(frames)
                 frame_name = frames[frame_idx]
 
-                color = self.cfg.get("color", "orange")
-                if color not in COLOR_PALETTES:
-                    color = "orange"
+                # Adaptive sleep: slow down when the crab is asleep
+                if state == "asleep":
+                    sleep_interval = 5.0
 
-                img = load_frame(color, frame_name)
+                frame_key = (color, frame_name)
+                if frame_key != self._last_frame_key:
+                    img = load_frame(color, frame_name)
+                    self._last_frame_key = frame_key
+                    if self.icon:
+                        self._set_icon(img)
 
                 if self.icon:
-                    self._set_icon(img)
                     if last_event:
                         self.icon.title = (
                             f"CrabCodeBar: {state} "
@@ -386,9 +448,12 @@ class CrabTray:
                     else:
                         self.icon.title = "CrabCodeBar: no activity"
             except Exception:
-                pass
+                now = time.time()
+                if now - self._last_error_time > self._ERROR_LOG_INTERVAL:
+                    traceback.print_exc(file=sys.stderr)
+                    self._last_error_time = now
 
-            time.sleep(1)
+            time.sleep(sleep_interval)
 
     # ---- Entry point ----
     def run(self):
@@ -417,7 +482,7 @@ def main():
         print("Run: python3 generate_sprites.py")
         sys.exit(1)
 
-    _kill_existing()
+    kill_pid_file()
     _write_pid()
     atexit.register(_remove_pid)
 

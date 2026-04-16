@@ -15,11 +15,9 @@ import argparse
 import os
 import platform
 import shutil
-import signal
 import subprocess
 import sys
 import textwrap
-import time
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
@@ -27,10 +25,10 @@ PLATFORM = platform.system()
 
 sys.path.insert(0, str(APP_DIR))
 from shared import (  # noqa: E402
-    AUTOSTART_PATH, PID_PATH, RUNTIME_DIRS, RUNTIME_FILES, STATE_PATH,
+    AUTOSTART_PATH, RUNTIME_DIRS, RUNTIME_FILES, SETTINGS_PATH,
+    kill_pid_file,
 )
 
-SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 CRAB_PY = APP_DIR / "crabcodebar.py"
 
 
@@ -74,7 +72,7 @@ def install_pip_dep(name, import_name=None):
                 stdout=subprocess.DEVNULL,
             )
             return
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, FileNotFoundError):
             continue
     print(f"\nError: Could not install {name}.")
     print("Try installing manually:")
@@ -154,6 +152,9 @@ def register_autostart():
 
 
 def _register_macos():
+    log_dir = Path.home() / "Library" / "Logs" / "CrabCodeBar"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "crabcodebar.log"
     plist = textwrap.dedent(f"""\
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -172,9 +173,9 @@ def _register_macos():
             <key>KeepAlive</key>
             <false/>
             <key>StandardOutPath</key>
-            <string>/tmp/crabcodebar.log</string>
+            <string>{log_path}</string>
             <key>StandardErrorPath</key>
-            <string>/tmp/crabcodebar.log</string>
+            <string>{log_path}</string>
         </dict>
         </plist>
     """)
@@ -184,10 +185,13 @@ def _register_macos():
 
 def _register_windows():
     # VBScript wrapper to launch without a visible console window.
-    vbs = textwrap.dedent(f"""\
-        Set WshShell = CreateObject("WScript.Shell")
-        WshShell.Run """{sys.executable}"" ""{CRAB_PY}""", 0, False
-    """)
+    # Uses Chr(34) for proper quoting of paths that may contain spaces
+    # (e.g., C:\Program Files\Python312\python.exe).
+    vbs = (
+        'Set WshShell = CreateObject("WScript.Shell")\n'
+        f'WshShell.Run Chr(34) & "{sys.executable}" & Chr(34) & " " '
+        f'& Chr(34) & "{CRAB_PY}" & Chr(34), 0, False\n'
+    )
     AUTOSTART_PATH.parent.mkdir(parents=True, exist_ok=True)
     AUTOSTART_PATH.write_text(vbs)
 
@@ -218,21 +222,7 @@ def remove_autostart():
 # ---- Process management ----
 def kill_running():
     """Kill any running CrabCodeBar process via PID file."""
-    try:
-        pid = int(PID_PATH.read_text().strip())
-    except (FileNotFoundError, ValueError, OSError):
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-        for _ in range(20):
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                break
-            time.sleep(0.1)
-        info(f"  Stopped running instance (PID {pid})")
-    except OSError:
-        pass
+    kill_pid_file(wait_iters=20, verbose=True)
 
 
 # ---- State file cleanup ----
@@ -252,11 +242,13 @@ def clean_state_files():
 # ---- Updater ----
 def update():
     """Pull latest changes from git remote and reinstall."""
+    git_cwd = APP_DIR
     if not (APP_DIR / ".git").exists():
         # Check if parent is the git root (installed inside a larger repo)
         git_dir = APP_DIR
         while git_dir != git_dir.parent:
             if (git_dir / ".git").exists():
+                git_cwd = git_dir
                 break
             git_dir = git_dir.parent
         else:
@@ -266,7 +258,7 @@ def update():
     try:
         result = subprocess.run(
             ["git", "pull", "--ff-only"],
-            cwd=APP_DIR,
+            cwd=git_cwd,
             capture_output=True,
             text=True,
         )
