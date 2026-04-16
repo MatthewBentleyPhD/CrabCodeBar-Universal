@@ -2,6 +2,8 @@
 
 A cross-platform animated pixel crab that lives in your system tray and reacts to [Claude Code](https://claude.com/claude-code) session activity in real time. Works on macOS, Windows, and Linux.
 
+![CrabCodeBar demo](docs/crabcodebar.gif)
+
 ## What it does
 
 CrabCodeBar watches your Claude Code sessions via hooks and shows what's happening at a glance:
@@ -14,7 +16,11 @@ CrabCodeBar watches your Claude Code sessions via hooks and shows what's happeni
 | **Waiting** | Session idle (recent) | Pacing side to side |
 | **Asleep** | No activity for 5 min (configurable) | Curled up with rising Z's |
 
+![Crab animation states](docs/crab-states.png)
+
 Right-click the tray icon for options: body color, notification sounds, sleep timer, and quit.
+
+![Available color options](docs/crab-colors.png)
 
 ## Prerequisites
 
@@ -124,14 +130,16 @@ If Claude Code crashes without firing SessionEnd, a 30-minute safety cap prevent
 
 ```
 CrabCodeBar-Universal/
-  crabcodebar.py       # tray app (main entry point)
-  hook.py              # Claude Code hook handler
-  shared.py            # constants and helpers shared across modules
-  install.py           # installer / uninstaller / updater
-  install_hooks.py     # hook registration in ~/.claude/settings.json
-  generate_sprites.py  # programmatic pixel art generator
-  sprites/             # generated PNG sprite frames
-  requirements.txt     # pinned dependency versions
+  crabcodebar.py         # tray app (main entry point)
+  hook.py                # Claude Code hook handler
+  shared.py              # constants and helpers shared across modules
+  install.py             # installer / uninstaller / updater
+  install_hooks.py       # hook registration in ~/.claude/settings.json
+  generate_sprites.py    # programmatic pixel art generator
+  generate_docs_image.py # documentation image generator
+  sprites/               # generated PNG sprite frames
+  docs/                  # documentation images (generated)
+  requirements.txt       # pinned dependency versions
 ```
 
 ## Customization
