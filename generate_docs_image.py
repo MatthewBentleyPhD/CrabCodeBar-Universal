@@ -57,7 +57,7 @@ def try_font(size):
     return ImageFont.load_default()
 
 
-# ---- Color palette (must match COLOR_PALETTES in crab.1s.py) ----
+# ---- Color palette (must match COLOR_PALETTES in crabcodebar.py) ----
 # Imported as display-order list of (name, tint-pair-or-None).
 COLOR_ORDER = [
     ("Orange", None),
